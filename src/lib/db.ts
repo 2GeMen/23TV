@@ -2,6 +2,8 @@ import Dexie, { type EntityTable } from 'dexie';
 import type { SourceConfig } from './types';
 // 仅类型引入：store.ts 运行时会引用本模块，反向只取类型不会形成运行时循环
 import type { LiveProbeEntry } from './store';
+import { accountHeaders, browserAccount } from './account-client';
+import { validateWatchRecord } from './watch-history';
 import { PERSIST_KEY, flushPendingPersist } from './persist-storage';
 
 /**
@@ -106,8 +108,8 @@ export async function upsertHistory(entry: Omit<HistoryEntry, 'id'>): Promise<vo
     ...existing,
     ...entry,
     id,
-    playbackPosition: entry.playbackPosition > 10 ? entry.playbackPosition : existing?.playbackPosition ?? 0,
-    duration: entry.duration || existing?.duration || 0,
+    playbackPosition: entry.playbackPosition > 10 ? entry.playbackPosition : (existing?.episodeIndex === entry.episodeIndex ? existing.playbackPosition : 0),
+    duration: entry.duration || (existing?.episodeIndex === entry.episodeIndex ? existing.duration : 0) || 0,
     timestamp: Date.now(),
   };
   await db.history.put(merged);
@@ -163,29 +165,36 @@ export async function clearProgress(sourceKey: string, vodId: string, episodeInd
   await db.progress.delete(progressKeyOf(sourceKey, vodId, episodeIndex));
 }
 
-export async function addSearchHistory(text: string): Promise<void> {
-  const t = text.trim().slice(0, 50);
-  if (!t) return;
-  await db.searchHistory.put({ text: t, timestamp: Date.now() });
-  const count = await db.searchHistory.count();
-  if (count > MAX_SEARCH_HISTORY) {
-    const oldest = await db.searchHistory.orderBy('timestamp').limit(count - MAX_SEARCH_HISTORY).toArray();
-    await db.searchHistory.bulkDelete(oldest.map((o) => o.text));
+const searchDatabases = new Map<string, Dexie & {searchHistory: EntityTable<SearchHistoryEntry, 'text'>}>();
+function accountSearchDb() {
+  const owner = browserAccount();
+  if (!owner) return null;
+  let database = searchDatabases.get(owner);
+  if (!database) {
+    database = new Dexie(`23tv-search-${owner}`) as Dexie & {searchHistory: EntityTable<SearchHistoryEntry, 'text'>};
+    database.version(1).stores({searchHistory:'text,timestamp'}); searchDatabases.set(owner,database);
   }
+  return database;
 }
-
+export async function listSearchHistory(): Promise<SearchHistoryEntry[]> {
+  const database = accountSearchDb();
+  return database ? database.searchHistory.orderBy('timestamp').reverse().limit(MAX_SEARCH_HISTORY).toArray() : [];
+}
+export async function addSearchHistory(text: string): Promise<void> {
+  const database = accountSearchDb(); if (!database) return;
+  const t = text.trim().slice(0,50); if (!t) return;
+  await database.searchHistory.put({text:t,timestamp:Date.now()});
+  const count=await database.searchHistory.count();
+  if(count>MAX_SEARCH_HISTORY){const oldest=await database.searchHistory.orderBy('timestamp').limit(count-MAX_SEARCH_HISTORY).toArray();await database.searchHistory.bulkDelete(oldest.map(x=>x.text));}
+}
 export async function removeSearchHistory(text: string): Promise<void> {
-  await db.searchHistory.delete(text);
+  const database=accountSearchDb(); if(database) await database.searchHistory.delete(text);
 }
-
 export async function clearSearchHistory(): Promise<void> {
-  await db.searchHistory.clear();
+  const database=accountSearchDb(); if(database) await database.searchHistory.clear();
 }
-
-/** 撤销「清空搜索记录」：按原时间戳回填，保持原有顺序 */
 export async function restoreSearchHistory(entries: SearchHistoryEntry[]): Promise<void> {
-  if (entries.length === 0) return;
-  await db.searchHistory.bulkPut(entries);
+  const database=accountSearchDb(); if(database && entries.length) await database.searchHistory.bulkPut(entries);
 }
 
 // —— 直播测活缓存（TTL 过滤由调用方负责，本层只管存取） ——
@@ -211,7 +220,9 @@ export async function clearLiveProbeResultsDb(): Promise<void> {
 export async function exportConfig(): Promise<string> {
   // 导出前 flush：把节流缓冲中的最新设置落盘，避免导出的是 800ms 前的旧快照
   flushPendingPersist();
-  const history = await db.history.toArray();
+  const response = await fetch('/api/watch-history', {cache:'no-store',headers:accountHeaders()});
+  if (!response.ok) throw new Error('无法读取当前账号的观看历史');
+  const history = await response.json();
   const settings = localStorage.getItem(PERSIST_KEY);
 
   const data: Record<string, unknown> = {
@@ -220,7 +231,7 @@ export async function exportConfig(): Promise<string> {
   if (settings) data[PERSIST_KEY] = settings;
 
   return JSON.stringify({
-    name: 'LibreTV-Settings',
+    name: '23TV-Settings',
     time: Date.now().toString(),
     cfgVer: '2.0.0',
     data,
@@ -232,7 +243,7 @@ export async function importConfig(content: string): Promise<void> {
     name?: string;
     data?: Record<string, string>;
   };
-  if (config.name !== 'LibreTV-Settings') throw new Error('配置文件格式不正确');
+  if (!['23TV-Settings', 'LibreTV-Settings'].includes(config.name || '')) throw new Error('配置文件格式不正确');
   const data = config.data || {};
 
   if (typeof data[PERSIST_KEY] === 'string') {
@@ -243,25 +254,17 @@ export async function importConfig(content: string): Promise<void> {
   }
 
   if (typeof data['viewingHistory'] === 'string') {
-    // 兼容旧版历史结构（含全集 URL 列表），只迁移定位信息
+    const owner = browserAccount();
     const legacy = JSON.parse(data['viewingHistory']) as Record<string, unknown>[];
-    for (const item of legacy.slice(0, MAX_HISTORY)) {
-      const sourceKey = String(item.sourceCode || item.sourceName || '');
-      const vodId = String(item.vod_id || '');
-      const title = String(item.title || '未知视频');
-      if (!sourceKey || !vodId) continue;
-      const totalEpisodes = Array.isArray(item.episodes) ? item.episodes.length : 0;
-      await upsertHistory({
-        sourceKey,
-        vodId,
-        title,
-        episodeIndex: typeof item.episodeIndex === 'number' ? item.episodeIndex : 0,
-        totalEpisodes,
-        playbackPosition: typeof item.playbackPosition === 'number' ? item.playbackPosition : 0,
-        duration: typeof item.duration === 'number' ? item.duration : 0,
-        timestamp: typeof item.timestamp === 'number' ? item.timestamp : Date.now(),
-      });
-    }
+    const records = legacy.slice(0,MAX_HISTORY).map(item => validateWatchRecord(item) || validateWatchRecord({
+      sourceKey: String(item.sourceCode || item.sourceName || ''), vodId: String(item.vod_id || ''), title: String(item.title || '未知视频'),
+      episodeIndex: typeof item.episodeIndex === 'number' ? item.episodeIndex : 0,
+      totalEpisodes: Array.isArray(item.episodes) ? item.episodes.length : 0,
+      playbackPosition: typeof item.playbackPosition === 'number' ? item.playbackPosition : 0,
+      duration: typeof item.duration === 'number' ? item.duration : 0,
+      timestamp: typeof item.timestamp === 'number' ? item.timestamp : Date.now(),
+    })).filter(Boolean);
+    if(records.length){const response=await fetch('/api/watch-history',{method:'POST',headers:{...accountHeaders(owner),'Content-Type':'application/json','X-23TV-History':'1'},body:JSON.stringify({action:'import',records})});if(!response.ok)throw Error('无法导入当前账号的观看历史');}
   }
 }
 

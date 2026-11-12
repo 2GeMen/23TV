@@ -1,4 +1,4 @@
-export type RecommendSourceValue = 'douban' | 'bangumi' | 'hot-list';
+export type RecommendSourceValue = 'douban' | 'bangumi' | 'hot-list' | 'tmdb';
 
 /**
  * 部署者通过 DEFAULT_RECOMMEND_SOURCE 环境变量指定的首页推荐数据源默认值。
@@ -8,9 +8,9 @@ export type RecommendSourceValue = 'douban' | 'bangumi' | 'hot-list';
 export function getEnvRecommendSource(): RecommendSourceValue | undefined {
   const raw = process.env.DEFAULT_RECOMMEND_SOURCE?.trim().toLowerCase();
   if (!raw) return undefined;
-  if (raw === 'douban' || raw === 'bangumi' || raw === 'hot-list') return raw;
+  if (raw === 'douban' || raw === 'bangumi' || raw === 'hot-list' || raw === 'tmdb') return raw;
   console.warn(
-    '[LibreTV] DEFAULT_RECOMMEND_SOURCE 取值无效，已忽略（可选 douban / bangumi / hot-list）：',
+    '[23TV] DEFAULT_RECOMMEND_SOURCE 取值无效，已忽略（可选 douban / bangumi / hot-list）：',
     raw
   );
   return undefined;

@@ -2,13 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { addSearchHistory, clearSearchHistory, db, removeSearchHistory, restoreSearchHistory } from '@/lib/db';
+import { addSearchHistory, clearSearchHistory, listSearchHistory, removeSearchHistory, restoreSearchHistory } from '@/lib/db';
 import { cn } from '@/lib/utils';
 import { useToast } from './toast';
+import { useAuth } from './auth';
 import { Icon } from './icon';
 
 /** 下拉最多展示条数，与 db 层 MAX_SEARCH_HISTORY 保持一致 */
-const HISTORY_LIMIT = 10;
 
 /**
  * 「最近搜索」下拉的交互逻辑：聚焦展开、输入时按关键字过滤（浏览器地址栏式交互）。
@@ -16,14 +16,16 @@ const HISTORY_LIMIT = 10;
  */
 export function useSearchHistory(input: string) {
   const { toast } = useToast();
+  const { userId, verified } = useAuth();
   const [open, setOpen] = useState(false);
   /** 键盘高亮项下标，-1 表示未选中 */
   const [activeIndex, setActiveIndex] = useState(-1);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const history = useQuery({
-    queryKey: ['searchHistory'],
-    queryFn: () => db.searchHistory.orderBy('timestamp').reverse().limit(HISTORY_LIMIT).toArray(),
+    queryKey: ['searchHistory', userId],
+    enabled: verified && !!userId,
+    queryFn: listSearchHistory,
   });
 
   const matches = useMemo(() => {
@@ -33,7 +35,7 @@ export function useSearchHistory(input: string) {
   }, [history.data, input]);
 
   // 唯一命中项与输入内容完全一致时不展开：否则会盖住用户刚敲进去的内容
-  const visible = open && matches.length > 0 && !(matches.length === 1 && matches[0].text === input.trim());
+  const visible = verified && !!userId && open && matches.length > 0 && !(matches.length === 1 && matches[0].text === input.trim());
 
   // 点按下拉之外的任意位置收起
   useEffect(() => {
@@ -81,7 +83,7 @@ export function useSearchHistory(input: string) {
 
   const onFocus = () => {
     setOpen(true);
-    history.refetch();
+    if (verified && userId) void history.refetch();
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>, onPick: (text: string) => void) => {

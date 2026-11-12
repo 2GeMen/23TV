@@ -37,7 +37,7 @@ export function Providers({ children }: { children: ReactNode }) {
       .then((d) => {
         // 预置数据（DEFAULT_SOURCES / DEFAULT_LIVE_SOURCES / DEFAULT_SUBSCRIPTIONS）
         // 预置订阅要经鉴权接口拉取，首屏这次可能发生在登录之前而 401 静默失败；
-        // 登录成功后由 AuthProvider 再调一次 applyEnvPresets 补齐（函数幂等）
+        // 登录成功后刷新页面，用新的会话重新加载预置（函数幂等）
         if (d) return applyEnvPresets(d);
       })
       .catch(() => {});

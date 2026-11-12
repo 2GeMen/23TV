@@ -39,9 +39,9 @@ export function Header({ showSearch = false }: { showSearch?: boolean }) {
     <>
       <header className="sticky top-0 z-40 bg-surface/90 backdrop-blur border-b border-line">
         <div className="max-w-6xl mx-auto px-4 h-14 flex items-center gap-3">
-          <Link href="/" aria-label="LibreTV 首页" className="flex items-center shrink-0">
+          <Link href="/" aria-label="23 TV 首页" className="flex items-center shrink-0">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/icons/icon-512.png" alt="LibreTV" className="w-7 h-7 rounded-lg" />
+            <img src="/branding/23tv.svg" alt="23 TV" className="w-8 h-8 rounded-lg" /><span className="ml-2 text-sm font-semibold text-content">23 TV</span>
           </Link>
 
           {showSearch && (
@@ -98,10 +98,7 @@ export function Header({ showSearch = false }: { showSearch?: boolean }) {
 
           <nav className="flex items-center gap-1 ml-auto">
             <HeaderLink href="/live" active={pathname === '/live'}>
-              直播
-            </HeaderLink>
-            <HeaderLink href="/about" active={pathname === '/about'}>
-              关于
+              Live
             </HeaderLink>
             <ThemeToggle />
             <IconButton label="观看历史" onClick={() => setHistoryOpen(true)}>

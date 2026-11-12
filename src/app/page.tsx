@@ -1,4 +1,5 @@
 'use client';
+import { ContinueWatching } from '@/components/history-panel';
 
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -11,6 +12,7 @@ import { useAppStore, resolveSource, isInDisabledSubscription, isSourceDisabled 
 import { api } from '@/lib/client-api';
 import type { SearchResultItem, SourceSearchOutcome } from '@/lib/types';
 import { SearchHistoryDropdown, useSearchHistory } from '@/components/search-history';
+import { rankSearchResults } from '@/lib/search-ranking';
 import { cn, formatDisableTtl, validateSourceUrl } from '@/lib/utils';
 import { useToast } from '@/components/toast';
 import { EmptyState } from '@/components/states';
@@ -37,6 +39,9 @@ function HomeContent() {
   const router = useRouter();
   const { toast } = useToast();
   const urlQuery = searchParams.get('s') || '';
+  const originalTitle = (searchParams.get('original') || '').slice(0, 100);
+  const targetType = searchParams.get('kind');
+  const targetYear = searchParams.get('year') || undefined;
   // 精确订阅所需字段（对齐 live 页的做法）：搜索流式期间逐源写健康度、
   // 打开设置抽屉/历史面板等无关 store 变化，都不应触发首页整树重渲染
   const customAPIs = useAppStore((s) => s.customAPIs);
@@ -91,11 +96,11 @@ function HomeContent() {
   );
 
   const searchQuery = useQuery({
-    queryKey: ['search', urlQuery, selectedKeys, yellowFilter],
+    queryKey: ['search', urlQuery, originalTitle, selectedKeys, yellowFilter],
     // 与 runSearch 的截断规则保持一致：顶栏搜索 / 手动构造长链接不会绕过上限
-    queryFn: ({ signal }) => {
+    queryFn: async ({ signal }) => {
       setStreamedOutcomes([]);
-      return api.search(urlQuery.slice(0, 100), selectedSources, yellowFilter, {
+      const primary = api.search(urlQuery.slice(0, 100), selectedSources, yellowFilter, {
         signal,
         // 逐源结算即更新：结果边搜边渲染，同时滚动健康度
         onSource: (outcome) => {
@@ -110,6 +115,17 @@ function HomeContent() {
           }
         },
       });
+      if (!originalTitle || originalTitle.toLowerCase() === urlQuery.toLowerCase()) return primary;
+      const [main, extra] = await Promise.all([
+        primary,
+        api.search(originalTitle, selectedSources, yellowFilter, { signal }).catch(() => ({ list: [], failures: [] })),
+      ]);
+      const seen = new Set<string>();
+      return { ...main, list: [...main.list, ...extra.list].filter(item => {
+        const key = `${item.sourceKey}:${item.vodId}`;
+        if (seen.has(key)) return false;
+        seen.add(key); return true;
+      }) };
     },
     enabled: Boolean(urlQuery) && selectedSources.length > 0,
     // 5 分钟内从播放页返回时直接使用缓存，不重新搜索（服务端另有 60s 结果缓存兜底）
@@ -119,7 +135,7 @@ function HomeContent() {
   // 最近搜索改为搜索框下拉（聚焦展开、按输入过滤），不再常驻首屏
   const searchHistory = useSearchHistory(input);
 
-  const runSearch = (q: string) => {
+  const runSearch = (q: string, metadata?: { originalTitle?: string; isTv?: boolean; year?: string }) => {
     const query = q.trim().slice(0, 100);
     if (!query) {
       toast('请输入搜索内容', 'info');
@@ -130,7 +146,11 @@ function HomeContent() {
       toast('请先在设置中添加并勾选点播源', 'warning');
       return;
     }
-    router.push(`/?s=${encodeURIComponent(query)}`, { scroll: false });
+    const params = new URLSearchParams({ s: query });
+    if (metadata?.originalTitle) params.set('original', metadata.originalTitle.slice(0, 100));
+    if (metadata?.isTv !== undefined) params.set('kind', metadata.isTv ? 'tv' : 'movie');
+    if (metadata?.year) params.set('year', metadata.year);
+    router.push(`/?${params}`, { scroll: false });
     searchHistory.record(query);
   };
 
@@ -156,7 +176,10 @@ function HomeContent() {
       .filter((o) => !o.ok)
       .map((o) => ({ sourceKey: o.sourceKey, error: o.error || '请求失败', timedOut: o.timedOut }));
   // 跨源同名聚合：同名影片合并为一张卡片，展开后可选择具体来源
-  const groups = useMemo(() => aggregateResults(list), [list]);
+  const groups = useMemo(() => aggregateResults(rankSearchResults(list, {
+    title: urlQuery, originalTitle, year: targetYear,
+    isTv: targetType === 'tv' ? true : targetType === 'movie' ? false : undefined,
+  })), [list, urlQuery, originalTitle, targetYear, targetType]);
 
   // 分批渲染：新一次搜索（groups 变化）时重置回首批
   const [visibleCount, setVisibleCount] = useState(RESULT_PAGE_SIZE);
@@ -172,11 +195,8 @@ function HomeContent() {
         {!urlQuery && (
           <div
             aria-hidden
-            className="pointer-events-none absolute inset-x-0 top-0 h-[420px] -z-10"
-            style={{
-              background:
-                'radial-gradient(60% 60% at 50% 0%, rgba(35,173,229,0.10) 0%, rgba(35,173,229,0.03) 45%, transparent 75%)',
-            }}
+            className="home-glow pointer-events-none absolute inset-x-0 top-0 h-[420px] -z-10"
+
           />
         )}
 
@@ -184,10 +204,15 @@ function HomeContent() {
         <section className={cn('flex flex-col items-center', urlQuery ? 'mb-6' : 'mt-8 mb-8')}>
           {!urlQuery && (
             <header className="text-center mb-6">
-              <h1 className="text-4xl sm:text-5xl font-bold brand-gradient">LibreTV</h1>
+              <div className="flex flex-col items-center gap-3">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src="/branding/23tv.svg" alt="23 TV，23 与家的标识" width={96} height={96} className="w-24 h-24" />
+                <h1 className="text-4xl sm:text-5xl font-bold tracking-tight text-content">23 TV</h1>
+                <p className="text-sm text-muted">把喜欢的故事，带回家。</p>
+              </div>
             </header>
           )}
-          {urlQuery && <h1 className="sr-only">LibreTV 视频搜索</h1>}
+          {urlQuery && <h1 className="sr-only">23 TV 视频搜索</h1>}
           {/* 定位容器比胶囊宽一圈：浮层按它的宽度对齐，接缝处不会与胶囊边框错位 1px */}
           <div ref={searchHistory.containerRef} className="relative w-full max-w-2xl">
             <form
@@ -363,12 +388,13 @@ function HomeContent() {
           </section>
         )}
 
+        {!urlQuery && <ContinueWatching />}
         {/* 首页推荐（有搜索时隐藏） */}
         {!urlQuery && (
           <RecommendSection
-            onPick={(title) => {
+            onPick={(title, item) => {
               setInput(title);
-              runSearch(title);
+              runSearch(title, item);
             }}
           />
         )}
@@ -409,7 +435,7 @@ function NoSourceGuide({ hasSources = false }: { hasSources?: boolean }) {
           <>点击右上角「设置」，勾选要参与搜索的点播源后重新搜索。</>
         ) : (
           <>
-            LibreTV 不内置任何采集站。点击右上角「设置 → 添加 API」，填入一个
+            23 TV 不内置任何采集站。点击右上角「设置 → 添加 API」，填入一个
             Apple CMS 采集站地址（如 <code className="text-accent text-xs">https://example.com/api.php/provide/vod</code>），
             勾选后即可开始搜索。
           </>

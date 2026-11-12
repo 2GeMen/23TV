@@ -16,6 +16,8 @@ export interface SearchResultItem {
   vodId: string;
   name: string;
   pic?: string;
+  aliases?: string[];
+  releaseDate?: string;
   typeName?: string;
   year?: string;
   area?: string;
@@ -42,6 +44,8 @@ export interface VideoInfo {
 
 export interface VideoDetail {
   episodes: string[];
+  /** Same index and source line as episodes; blank when the provider has no label. */
+  episodeLabels?: string[];
   videoInfo: VideoInfo;
 }
 
@@ -51,6 +55,8 @@ export interface DoubanItem {
   cover: string;
   rating?: string;
   isTv?: boolean;
+  originalTitle?: string;
+  year?: string;
 }
 
 export interface SourceSearchOutcome {
@@ -91,6 +97,8 @@ export interface BangumiCalendarResponse {
 }
 
 export interface AuthStatusResponse {
+  accountMode?: boolean;
+  user?: {id: string; email: string; role: string; revision: number} | null;
   /** 服务器是否配置了 PASSWORD */
   passwordRequired: boolean;
   /** 当前会话是否已验证 */
@@ -103,7 +111,7 @@ export interface AuthStatusResponse {
   /** 部署者通过 DEFAULT_SUBSCRIPTIONS 环境变量预置的 SourceList 订阅链接（未配置时为空数组） */
   defaultSubscriptions: { url: string; name?: string }[];
   /** 部署者通过 DEFAULT_RECOMMEND_SOURCE 环境变量指定的首页推荐数据源默认值（未配置时为 null） */
-  defaultRecommendSource: 'douban' | 'bangumi' | 'hot-list' | null;
+  defaultRecommendSource: 'douban' | 'bangumi' | 'hot-list' | 'tmdb' | null;
   /** 部署者通过 DEFAULT_IMAGE_MODE 环境变量指定的封面图加载方式默认值（未配置时为 null） */
   defaultImageMode: 'direct' | 'proxy' | null;
 }

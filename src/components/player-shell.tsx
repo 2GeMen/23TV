@@ -36,13 +36,95 @@ interface PlayerShellProps {
   /** 进度恢复：优先 URL position，其次查询该回调（返回 0 表示无记录） */
   getRestorePosition?: () => number | Promise<number>;
   onTimeUpdate?: (position: number, duration: number) => void;
-  onEnded?: () => void;
+  onEnded?: (position: number, duration: number) => void;
   onPause?: (position: number, duration: number) => void;
   /** 恢复策略判源不可用（重试耗尽/格式硬失败）时回调：父级弹出换源面板 */
   onRequestSwitchSource?: (reason: string) => void;
 }
 
-export function PlayerShell({
+/** iPhone/iPad 使用系统控件，避免自定义触摸层和播放器状态管理干扰。 */
+export function PlayerShell(props: PlayerShellProps) {
+  const [isIOS, setIsIOS] = useState<boolean | null>(null);
+  useEffect(() => {
+    setIsIOS(/iPhone|iPad|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+  }, []);
+  if (isIOS === null) return <div className="w-full h-full bg-black" />;
+  return isIOS ? <IOSPlayerShell key={`${props.episodeKey}:${props.url}`} {...props} /> : <EnhancedPlayerShell {...props} />;
+}
+
+function IOSPlayerShell(props: PlayerShellProps) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const latest = useRef(props);
+  latest.current = props;
+  const [message, setMessage] = useState('');
+  const progressReady = useRef(false);
+  const src = props.url.startsWith('/api/proxy')
+    ? props.url : '/api/proxy?url=' + encodeURIComponent(props.url);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    let active = true;
+    let restored = false;
+    progressReady.current = false;
+    const callbacks = latest.current;
+    setMessage('');
+    const metadata = async () => {
+      if (restored) return;
+      restored = true;
+      try {
+        const saved = (await callbacks.getRestorePosition?.()) ?? 0;
+        if (active && saved >= 1 && Number.isFinite(video.duration) && video.duration > 0) {
+          video.currentTime = Math.min(saved, Math.max(0, video.duration - 0.5));
+        }
+      } catch { /* 存储不可用不应影响播放 */ }
+      finally { if (active) progressReady.current = true; }
+    };
+    const save = () => {
+      if (progressReady.current && !video.ended && Number.isFinite(video.duration)) callbacks.onPause?.(video.currentTime, video.duration);
+    };
+    video.addEventListener('loadedmetadata', metadata);
+    video.addEventListener('pause', save);
+    const hide = () => { if (document.hidden) save(); };
+    document.addEventListener('visibilitychange', hide);
+    window.addEventListener('pagehide', save);
+    // 用户通过原生播放按钮启动；不在异步回调中反复调用 play/load。
+    return () => {
+      active = false;
+      video.removeEventListener('loadedmetadata', metadata);
+      video.removeEventListener('pause', save);
+      document.removeEventListener('visibilitychange', hide);
+      window.removeEventListener('pagehide', save);
+      save();
+    };
+  }, [src]);
+  return (
+    <div className="relative w-full h-full bg-black">
+      <video
+        ref={videoRef}
+        src={src}
+        controls
+        playsInline
+        preload="metadata"
+        className="w-full h-full"
+        style={{ objectFit: 'contain' }}
+        onPlaying={() => setMessage('')}
+        onTimeUpdate={(event) => {
+          const video = event.currentTarget;
+          if (progressReady.current && !video.ended && Number.isFinite(video.duration)) latest.current.onTimeUpdate?.(video.currentTime, video.duration);
+        }}
+        onEnded={e => latest.current.onEnded?.(e.currentTarget.currentTime, e.currentTarget.duration)}
+        onError={(event) => {
+          const code = event.currentTarget.error?.code;
+          setMessage('系统播放器错误 ' + (code ?? '未知') + '，请尝试换源');
+        }}
+      />
+      {message && <p role="status" className="absolute top-2 left-2 right-2 text-white bg-black/80 p-2 text-sm pointer-events-none">{message}</p>}
+    </div>
+  );
+}
+
+function EnhancedPlayerShell({
   url,
   title,
   adFilter,
@@ -60,6 +142,8 @@ export function PlayerShell({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const artRef = useRef<any>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const nativePlaybackRef = useRef(false);
+  const nativeCleanupRef = useRef<(() => void) | null>(null);
   const [error, setError] = useState('');
   const [hint, setHint] = useState('');
   // 起播前的品牌占位图（沿用旧版 nomedia 素材），实际开始播放后隐藏
@@ -75,6 +159,14 @@ export function PlayerShell({
     url, title, adFilter, autoplayNext, episodeKey, nextUrl, nextEpisodeKey,
     getRestorePosition, onTimeUpdate, onEnded, onPause, onRequestSwitchSource,
   };
+
+  const activePropsRef = useRef(propsRef.current);
+  if (activePropsRef.current.episodeKey === episodeKey && activePropsRef.current.url === url) {
+    activePropsRef.current = propsRef.current;
+  }
+  const progressReadyRef = useRef(false);
+  const restoreCleanupRef = useRef<(() => void) | null>(null);
+  const restoreGenerationRef = useRef(0);
 
   // 跨集共享、每次换集重置的播放链路状态
   // 媒体健康度：音频轨可播不代表视频轨正常（「黑屏但有声」的假死态）。
@@ -128,7 +220,8 @@ export function PlayerShell({
   // 当前集预取（episodeKey 缺省 = 关闭，见 ensure 内部 settings.enabled 判断）
   const ensurePrefetch = (mediaUrl: string, currentTime: number, horizonSeconds?: number) => {
     const p = propsRef.current;
-    if (!p.episodeKey) return;
+    // 原生 HLS 自行管理缓冲；手机不启动并行预取。
+    if (nativePlaybackRef.current || !p.episodeKey) return;
     getVideoPrefetcher().ensure({
       m3u8Url: mediaUrl,
       currentTime,
@@ -154,8 +247,52 @@ export function PlayerShell({
    * 注意：不销毁 ArtPlayer，只销毁并重建 hls，从而保留网页全屏等播放器状态。
    */
   const setupHls = (video: HTMLVideoElement, mediaUrl: string, allowProxyFallback: boolean) => {
+    nativeCleanupRef.current?.();
+    nativeCleanupRef.current = null;
     hlsRef.current?.destroy();
+    hlsRef.current = null;
     currentMediaUrlRef.current = mediaUrl;
+    progressReadyRef.current = false;
+    restoredRef.current = false;
+    restoreCleanupRef.current?.();
+    const generation = ++restoreGenerationRef.current;
+    const callbacks = activePropsRef.current;
+    const restore = async () => {
+      if (restoredRef.current || !Number.isFinite(video.duration) || video.duration <= 0) return;
+      restoredRef.current = true;
+      try {
+        const saved = (await callbacks.getRestorePosition?.()) || 0;
+        if (generation !== restoreGenerationRef.current) return;
+        if (saved >= 1) {
+          video.currentTime = Math.min(saved, Math.max(0, video.duration - 0.5));
+          showHint('已从 ' + formatTime(saved) + ' 继续播放');
+        }
+      } catch { /* Saving must still work if restore is unavailable. */ }
+      finally {
+        if (generation === restoreGenerationRef.current) {
+          progressReadyRef.current = true;
+          video.play().catch(() => {});
+          ensurePrefetch(mediaUrl, video.currentTime);
+        }
+      }
+    };
+    video.addEventListener('loadedmetadata', restore);
+    video.addEventListener('durationchange', restore);
+    restoreCleanupRef.current = () => { video.removeEventListener('loadedmetadata', restore); video.removeEventListener('durationchange', restore); };
+
+    const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    nativePlaybackRef.current = !!video.canPlayType('application/vnd.apple.mpegurl') &&
+      (isIOS || !Hls.isSupported());
+    if (nativePlaybackRef.current) {
+      // 同源代理改写清单和分片，保留登录 Cookie，避免源站 CORS/防盗链差异。
+      const nativeUrl = mediaUrl.startsWith('/api/proxy')
+        ? mediaUrl : '/api/proxy?url=' + encodeURIComponent(mediaUrl);
+      currentMediaUrlRef.current = nativeUrl;
+      video.src = nativeUrl;
+      video.load();
+      return;
+    }
     const hls = new Hls(buildHlsConfig());
     hlsRef.current = hls;
 
@@ -167,20 +304,7 @@ export function PlayerShell({
       // 预取锚点：恢复进度时直接取恢复目标。赋值后 video.currentTime 未必立刻反映
       // （Safari 系），而 ensure 是以「锚点未变」为前提复用 parsing 中的运行的——
       // 这里读到旧值会把窗口建在片头，且白等一次纠错重建。
-      let prefetchAnchor = video.currentTime;
-      // 进度恢复（每集一次）：优先 URL position，其次 IndexedDB 记录
-      if (!restoredRef.current) {
-        restoredRef.current = true;
-        try {
-          const saved = (await propsRef.current.getRestorePosition?.()) ?? 0;
-          const duration = artRef.current?.duration || 0;
-          if (saved > 10 && duration > 0 && saved < duration - 2) {
-            if (artRef.current) artRef.current.currentTime = saved;
-            prefetchAnchor = saved;
-            showHint(`已从 ${formatTime(saved)} 继续播放`);
-          }
-        } catch { /* 忽略恢复失败 */ }
-      }
+      const prefetchAnchor = video.currentTime;
       // 新集立即预取（否则要等 timeupdate 的 30s 节流，起播初期无缓存）
       ensurePrefetch(mediaUrl, prefetchAnchor);
       video.play().catch(() => {});
@@ -241,6 +365,11 @@ export function PlayerShell({
   /** 换集：重置每集状态并切换到新 HLS 源（不重建 ArtPlayer）。 */
   const loadEpisode = (targetUrl: string) => {
     if (!targetUrl) return;
+    const old = artRef.current;
+    if (old && progressReadyRef.current && !endedRef.current) activePropsRef.current.onPause?.(old.currentTime, old.duration);
+    progressReadyRef.current = false;
+    activePropsRef.current = propsRef.current;
+    endedRef.current = false;
     mediaHealthyRef.current = true;
     playbackStartedRef.current = false;
     videoErrorRetryUsedRef.current = false;
@@ -311,6 +440,7 @@ export function PlayerShell({
 
     art.on('video:playing', () => {
       playbackStartedRef.current = true;
+      if (art.currentTime < art.duration - 0.5) endedRef.current = false;
       setShowPoster(false);
       // 仅在媒体真正恢复（有分片进入 buffer）后清错误遮罩：
       // 否则「视频轨挂了、音频轨先播出来」时会清掉遮罩，留下黑屏假死态
@@ -330,9 +460,9 @@ export function PlayerShell({
     });
     art.on('video:timeupdate', () => {
       const now = Date.now();
-      if (now - lastSave > 5000) {
+      if (progressReadyRef.current && !endedRef.current && now - lastSave > 5000) {
         lastSave = now;
-        propsRef.current.onTimeUpdate?.(art.currentTime, art.duration);
+        activePropsRef.current.onTimeUpdate?.(art.currentTime, art.duration);
       }
       // 每 30s 续跑一次前向预取窗口（ensure 幂等，窗口未覆盖足够余量才会重建）
       if (now - lastPrefetchEnsureRef.current > 30_000) {
@@ -343,10 +473,11 @@ export function PlayerShell({
       }
     });
     art.on('video:seeked', () => {
+      if (progressReadyRef.current && !endedRef.current) activePropsRef.current.onPause?.(art.currentTime, art.duration);
       ensurePrefetch(currentMediaUrlRef.current, art.currentTime);
     });
     art.on('video:pause', () => {
-      propsRef.current.onPause?.(art.currentTime, art.duration);
+      if (progressReadyRef.current && !endedRef.current) activePropsRef.current.onPause?.(art.currentTime, art.duration);
       // 暂停 = 预取黄金窗口：解除限速并无限铺满整集（用户主动行为，带宽占用可接受）
       // waiting 触发的限速在此解除，否则黄金窗口会被 500ms 轮询冻结
       getVideoPrefetcher().setThrottled(false);
@@ -361,7 +492,7 @@ export function PlayerShell({
     });
     art.on('video:ended', () => {
       endedRef.current = true;
-      propsRef.current.onEnded?.();
+      activePropsRef.current.onEnded?.(art.currentTime, art.duration);
     });
 
     // —— 键盘快捷键（旧版 hotkey:false + 自定义逻辑的移植） ——
@@ -440,17 +571,21 @@ export function PlayerShell({
     // 卸载与页面隐藏时保存进度
     const saveOnHide = () => {
       if (document.visibilityState === 'hidden') {
-        propsRef.current.onPause?.(art.currentTime, art.duration);
+        if (progressReadyRef.current && !endedRef.current) activePropsRef.current.onPause?.(art.currentTime, art.duration);
       }
     };
     document.addEventListener('visibilitychange', saveOnHide);
 
     return () => {
+      // Invalidate any asynchronous restore belonging to the destroyed media engine.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      restoreGenerationRef.current++;
+      restoreCleanupRef.current?.();
       // 卸载前刷一次最终进度，避免丢失最后几秒。
       // 已自然播完的集数不回写，避免覆盖 onEnded 里清除的「已看完」记录
       if (!endedRef.current) {
         try {
-          propsRef.current.onPause?.(art.currentTime, art.duration);
+          if (progressReadyRef.current && !endedRef.current) activePropsRef.current.onPause?.(art.currentTime, art.duration);
         } catch { /* 忽略 */ }
       }
       document.removeEventListener('keydown', shortcuts);
@@ -461,6 +596,8 @@ export function PlayerShell({
       el?.removeEventListener('touchcancel', onTouchEnd);
       el?.removeEventListener('touchmove', onTouchMove);
       el?.removeEventListener('contextmenu', onContextMenu);
+      nativeCleanupRef.current?.();
+      nativeCleanupRef.current = null;
       hlsRef.current?.destroy();
       hlsRef.current = null;
       recoveryRef.current?.dispose();
@@ -478,7 +615,7 @@ export function PlayerShell({
     if (firstUrlRef.current) { firstUrlRef.current = false; return; }
     loadEpisode(url);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url]);
+  }, [url, episodeKey]);
 
   // —— 广告过滤开关变化：重建 HLS loader（无需重建整个播放器） ——
   const firstAdFilterRef = useRef(true);

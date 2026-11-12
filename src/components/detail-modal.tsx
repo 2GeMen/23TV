@@ -205,22 +205,24 @@ export function DetailModal({ item, onClose }: { item: SearchResultItem | null; 
                         />
                         {reversed ? '正序排列' : '倒序排列'}
                       </button>
-                      <span className="text-sm text-faint">共 {episodes.length} 集</span>
+                      <span className="text-sm text-faint">共 {episodes.length} 项</span>
                     </div>
                     <button className="btn-primary btn-sm" onClick={copyLinks}>
                       复制链接
                     </button>
                   </div>
-                  <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-7 gap-2 max-h-[40vh] overflow-y-auto scrollbar-thin pr-1">
+                  <div className={cn('grid gap-2 max-h-[40vh] overflow-y-auto scrollbar-thin pr-1', detail.episodeLabels?.some(label => label.length > 5) ? 'grid-cols-2 sm:grid-cols-3' : 'grid-cols-3 sm:grid-cols-5 md:grid-cols-7')}>
                     {episodes.map((_, i) => {
                       const realIndex = reversed ? detail.episodes.length - 1 - i : i;
+                      const label = detail.episodeLabels?.[realIndex] || `第 ${realIndex + 1} 集`;
                       return (
                         <button
                           key={realIndex}
-                          className="btn-ghost btn-sm !px-1 text-center"
+                          title={label}
+                          className="btn-ghost btn-sm !px-2 min-w-0 whitespace-normal break-all text-center"
                           onClick={() => play(realIndex)}
                         >
-                          {realIndex + 1}
+                          {label}
                         </button>
                       );
                     })}

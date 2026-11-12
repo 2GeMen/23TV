@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { isPasswordConfigured, sessionFromCookieHeader } from '@/lib/auth';
+import { isPasswordConfigured, sessionFromCookieHeader, accountMode, sessionIdentityFromCookieHeader } from '@/lib/auth';
 import { getEnvSources } from '@/lib/env-sources';
 import { getEnvLiveSources } from '@/lib/env-live-sources';
 import { getEnvSubscriptions } from '@/lib/env-subscriptions';
@@ -14,7 +14,9 @@ export async function GET(req: Request) {
   const verified = passwordRequired && sessionFromCookieHeader(req.headers.get('cookie'));
   return NextResponse.json({
     passwordRequired,
+    accountMode: accountMode(),
     verified,
+    user: verified ? sessionIdentityFromCookieHeader(req.headers.get('cookie')) : null,
     // 构建时由 next.config.ts 从 package.json 注入
     version: process.env.APP_VERSION || 'dev',
     // 部署者通过 DEFAULT_SOURCES 预置的采集站

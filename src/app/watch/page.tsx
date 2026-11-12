@@ -21,20 +21,13 @@ import { enqueueDownload } from '@/components/download-manager';
 import { Icon } from '@/components/icon';
 import { useAuth } from '@/components/auth';
 import { resolveSource, useAppStore } from '@/lib/store';
-import {
-  clearProgress,
-  progressKeyOf,
-  saveProgress,
-  updateHistoryProgress,
-  upsertHistory,
-  db,
-} from '@/lib/db';
 import { cn } from '@/lib/utils';
+import { restoreFamilyProgress, saveFamilyProgress } from '@/lib/family-history';
 
 /**
  * 播放页（唯一入口，替代旧版 watch.html → player.html 跳转链）。
  * 状态全部由 URL 驱动：/watch?source=xx&id=..&index=..&title=..
- * 集数列表由服务端详情接口获取；进度与历史走 IndexedDB。
+ * 集数列表由服务端详情接口获取；进度与历史按登录账号保存在服务端。
  */
 export default function WatchPage() {
   return (
@@ -48,7 +41,7 @@ function WatchContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const store = useAppStore();
-  const { verified } = useAuth();
+  const { verified, userId } = useAuth();
 
   const sourceKey = searchParams.get('source') || '';
   const vodId = searchParams.get('id') || '';
@@ -59,10 +52,14 @@ function WatchContent() {
   const [reversed, setReversed] = useState(false);
   const [switchOpen, setSwitchOpen] = useState(false);
 
-  const source = resolveSource(store, sourceKey, {
+  const resolvedSource = resolveSource(store, sourceKey, {
     url: searchParams.get('sourceUrl') || undefined,
     detail: searchParams.get('detail') || undefined,
   });
+  const sourceHint = searchParams.get('sourceUrl');
+  const source = sourceHint && resolvedSource?.url !== sourceHint
+    ? { key: sourceKey, name: '历史来源', url: sourceHint, detail: searchParams.get('detail') || undefined }
+    : resolvedSource;
 
   // 详情查询：无 id（纯直连链接分享）时跳过
   const detailQuery = useQuery({
@@ -89,6 +86,10 @@ function WatchContent() {
     return indexParam;
   }, [episodes, indexParam]);
 
+  const episodeLabels = detailQuery.data?.episodeLabels;
+  const currentEpisodeLabel = episodeLabels?.[currentIndex] || `第 ${currentIndex + 1} 集`;
+  const wideEpisodes = episodeLabels?.some(label => label.length > 5);
+
   const goEpisode = useCallback(
     (index: number) => {
       const sp = new URLSearchParams(searchParams.toString());
@@ -100,59 +101,41 @@ function WatchContent() {
     [router, searchParams, episodes, directUrl]
   );
 
-  // 进度恢复优先级：URL position 参数 > IndexedDB 记录
+  const [historyError, setHistoryError] = useState(false);
+  const recordBase = useMemo(() => ({
+    sourceKey: sourceKey || 'direct', sourceUrl: source?.url, vodId: vodId || currentUrl,
+    title: videoTitle, pic: detailQuery.data?.videoInfo?.cover,
+    episodeIndex: currentIndex, totalEpisodes: episodes.length,
+    playbackPosition: 0, duration: 0, timestamp: Date.now(),
+  }), [sourceKey, source?.url, vodId, currentUrl, videoTitle, detailQuery.data?.videoInfo?.cover, currentIndex, episodes.length]);
   const getRestorePosition = useCallback(async () => {
-    const urlPos = parseInt(searchParams.get('position') || '0', 10) || 0;
-    if (urlPos > 0) return urlPos;
-    if (!vodId) return 0;
-    const entry = await db.progress.get(progressKeyOf(sourceKey, vodId, currentIndex));
-    return entry?.position ?? 0;
-  }, [searchParams, sourceKey, vodId, currentIndex]);
-
-  // 写入观看历史（进入页面即记录，进度后续增量更新）
-  useEffect(() => {
-    if (!verified || !sourceKey || !currentUrl) return;
-    const timer = setTimeout(() => {
-      upsertHistory({
-        sourceKey,
-        sourceUrl: source?.url,
-        vodId: vodId || currentUrl,
-        title: videoTitle,
-        pic: detailQuery.data?.videoInfo?.cover,
-        episodeIndex: currentIndex,
-        totalEpisodes: episodes.length,
-        playbackPosition: 0,
-        duration: 0,
-        timestamp: Date.now(),
-      }).catch(() => {});
-    }, 2000);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [verified, sourceKey, vodId, currentIndex, videoTitle, currentUrl]);
-
-  // 播放中与暂停时的进度落盘逻辑一致，共用同一回调
-  const handleProgress = useCallback(
-    (position: number, duration: number) => {
-      if (vodId) {
-        saveProgress(sourceKey, vodId, currentIndex, position, duration).catch(() => {});
-        updateHistoryProgress(sourceKey, vodId || currentUrl, position, duration).catch(() => {});
-      }
-    },
-    [sourceKey, vodId, currentIndex, currentUrl]
-  );
-
+    const explicit = Number(searchParams.get('position'));
+    if (Number.isFinite(explicit) && explicit > 0) return explicit;
+    return restoreFamilyProgress(recordBase, userId);
+  }, [searchParams, recordBase, userId]);
+  const lastCheckpoint = useRef({ identity: '', time: 0 });
+  const writeProgress = useCallback((position: number, duration: number, force = false, completed = false) => {
+    if (!verified || !currentUrl || !Number.isFinite(position) || !Number.isFinite(duration) || duration <= 0 || position < 1) return;
+    const record = { ...recordBase, playbackPosition: position, duration, timestamp: Date.now(), completed };
+    const identity = `${record.sourceKey}:${record.vodId}:${record.episodeIndex}`;
+    if (!force && lastCheckpoint.current.identity === identity && Date.now() - lastCheckpoint.current.time < 5000) return;
+    lastCheckpoint.current = { identity, time: Date.now() };
+    void saveFamilyProgress(record, userId).then(() => setHistoryError(false)).catch(() => setHistoryError(true));
+  }, [verified, userId, currentUrl, recordBase]);
+  const handleProgress = useCallback((position: number, duration: number) => writeProgress(position, duration), [writeProgress]);
+  const handlePause = useCallback((position: number, duration: number) => writeProgress(position, duration, true), [writeProgress]);
   // 自动连播的 800ms 延迟切集要在卸载时取消，避免离开页面后跳转
   const autoNextTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
     if (autoNextTimer.current) clearTimeout(autoNextTimer.current);
   }, []);
 
-  const handleEnded = useCallback(() => {
-    if (vodId) clearProgress(sourceKey, vodId, currentIndex).catch(() => {});
+  const handleEnded = useCallback((_position: number, duration: number) => {
+    writeProgress(duration, duration, true, true);
     if (store.autoplayNext && currentIndex < episodes.length - 1) {
       autoNextTimer.current = setTimeout(() => goEpisode(currentIndex + 1), 800);
     }
-  }, [store.autoplayNext, currentIndex, episodes.length, goEpisode, sourceKey, vodId]);
+  }, [store.autoplayNext, currentIndex, episodes.length, goEpisode, writeProgress]);
 
   // Alt+←/→ 集数切换快捷键
   useEffect(() => {
@@ -202,9 +185,9 @@ function WatchContent() {
           <HomeButton />
           <div className="min-w-0">
             <h1 className="text-sm font-medium text-content truncate">{videoTitle}</h1>
-            <p className="text-xs text-faint">
+            <p className="text-xs text-faint truncate" title={episodes.length ? currentEpisodeLabel : undefined}>
               {source.name}
-              {episodes.length > 0 && ` · 第 ${currentIndex + 1}/${episodes.length} 集`}
+              {episodes.length > 0 && ` · ${currentEpisodeLabel}（${currentIndex + 1}/${episodes.length}）`}
             </p>
           </div>
           <div className="ml-auto flex items-center gap-2">
@@ -215,7 +198,7 @@ function WatchContent() {
                 enqueueDownload({
                   url: currentUrl,
                   // 多集才带集数后缀；单集影片（含电影）文件名就是纯标题
-                  title: `${videoTitle}${episodes.length > 1 ? ` 第${currentIndex + 1}集` : ''}`,
+                  title: `${videoTitle}${episodes.length > 1 ? ` ${currentEpisodeLabel}` : ''}`,
                   format: 'MP4',
                 });
                 // 「已加入下载队列」由 DownloadManager 在真正入队后提示：
@@ -246,7 +229,7 @@ function WatchContent() {
                   nextEpisodeKey={currentIndex + 1 < episodes.length ? `${sourceKey}:${vodId}:${currentIndex + 1}` : undefined}
                   getRestorePosition={getRestorePosition}
                   onTimeUpdate={handleProgress}
-                  onPause={handleProgress}
+                  onPause={handlePause}
                   onEnded={handleEnded}
                 />
               ) : (
@@ -262,6 +245,7 @@ function WatchContent() {
               )}
             </div>
 
+            {historyError && <p role="status" className="text-sm text-danger mt-2">你的观看进度暂未同步，请检查本机服务连接。</p>}
             {/* 操作栏 */}
             <div className="flex flex-wrap items-center gap-2 mt-3">
               <button
@@ -319,11 +303,11 @@ function WatchContent() {
                 <EmptyState variant="plain" title={detailQuery.isError ? '获取剧集失败' : '暂无剧集信息'} />
               )
             ) : (
-              <div className="grid grid-cols-5 lg:grid-cols-4 gap-1.5 max-h-[65vh] overflow-y-auto scrollbar-thin pr-1">
+              <div className={cn('grid gap-1.5 max-h-[65vh] overflow-y-auto scrollbar-thin pr-1', wideEpisodes ? 'grid-cols-2' : 'grid-cols-4 lg:grid-cols-3')}>
                 {orderedEpisodes.map((realIndex) => (
                   <EpisodeButton
                     key={realIndex}
-                    index={realIndex}
+                    label={episodeLabels?.[realIndex] || `第 ${realIndex + 1} 集`}
                     active={realIndex === currentIndex}
                     onClick={() => goEpisode(realIndex)}
                   />
@@ -351,7 +335,7 @@ function WatchContent() {
 }
 
 /** 集数按钮：激活时自动滚动进可视区（长剧列表） */
-function EpisodeButton({ index, active, onClick }: { index: number; active: boolean; onClick: () => void }) {
+function EpisodeButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   const ref = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -361,10 +345,12 @@ function EpisodeButton({ index, active, onClick }: { index: number; active: bool
   return (
     <button
       ref={ref}
-      className={cn('btn btn-sm !px-1', active ? 'episode-active' : 'btn-ghost')}
+      title={label}
+      aria-current={active ? 'true' : undefined}
+      className={cn('btn btn-sm !px-2 min-w-0 whitespace-normal break-all text-center', active ? 'episode-active' : 'btn-ghost')}
       onClick={onClick}
     >
-      {index + 1}
+      {label}
     </button>
   );
 }

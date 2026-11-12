@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { readViewerSession } from '../../server/viewer-session.cjs';
+export const accountMode = () => process.env.ACCOUNT_MODE === 'invite';
 
 /**
  * 会话鉴权：httpOnly cookie + HMAC 签名。
@@ -17,7 +19,7 @@ export function getPassword(): string {
 }
 
 export function isPasswordConfigured(): boolean {
-  return getPassword().length > 0;
+  return accountMode() ? !!process.env.ADMIN_PASSWORD : getPassword().length > 0;
 }
 
 function getSecret(): string {
@@ -30,15 +32,16 @@ function hmac(payload: string): string {
 }
 
 /** 生成签名会话 token：`<expiresAtMs>.<hmac>` */
-export function signSession(): { token: string; expiresAt: number } {
+export function signSession(identity?: { id: string; revision: number }): { token: string; expiresAt: number } {
   const expiresAt = Date.now() + SESSION_TTL_MS;
-  const payload = String(expiresAt);
+  const payload = identity ? Buffer.from(JSON.stringify({ exp: expiresAt, ...identity })).toString('base64url') : String(expiresAt);
   return { token: `${payload}.${hmac(payload)}`, expiresAt };
 }
 
 /** 校验会话 token 的签名与有效期 */
 export function verifySession(token: string | undefined | null): boolean {
   if (!token) return false;
+  if (accountMode()) return !!readViewerSession(`${SESSION_COOKIE}=${encodeURIComponent(token)}`);
   const dot = token.lastIndexOf('.');
   if (dot <= 0) return false;
   const payload = token.slice(0, dot);
@@ -47,8 +50,8 @@ export function verifySession(token: string | undefined | null): boolean {
   const a = Buffer.from(sig);
   const b = Buffer.from(expected);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return false;
-  const expiresAt = parseInt(payload, 10);
-  if (!Number.isFinite(expiresAt)) return false;
+  const expiresAt = Number(payload);
+  if (!Number.isFinite(expiresAt) || expiresAt > Date.now() + SESSION_TTL_MS + 1000) return false;
   return Date.now() < expiresAt;
 }
 
@@ -70,7 +73,7 @@ export function sessionFromCookieHeader(cookieHeader: string | null): boolean {
     if (eq === -1) continue;
     const name = c.slice(0, eq).trim();
     if (name === SESSION_COOKIE) {
-      return verifySession(decodeURIComponent(c.slice(eq + 1).trim()));
+      try { return verifySession(decodeURIComponent(c.slice(eq + 1).trim())); } catch { return false; }
     }
   }
   return false;
@@ -108,4 +111,9 @@ if (typeof setInterval === 'function') {
   }, 60 * 1000);
   // 不阻止 Node 进程退出
   if (typeof timer.unref === 'function') timer.unref();
+}
+
+export function sessionIdentityFromCookieHeader(cookie: string | null): {id: string; email: string; role: string; revision: number} | null {
+  if (accountMode()) return readViewerSession(cookie || '');
+  return sessionFromCookieHeader(cookie) ? {id:'local-admin',email:'本机管理员',role:'admin',revision:1} : null;
 }

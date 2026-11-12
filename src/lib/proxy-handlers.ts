@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { guardRequest, jsonError } from '@/lib/api-guard';
 import { checkLiveUrlAllowed, isBlockedByDNS, isValidProxyUrl } from '@/lib/ssrf';
 import { fetchWithSafeRedirects } from '@/lib/fetch-utils';
-import { rewriteM3u8, LIVE_STREAM_BASE } from '@/lib/m3u8';
+import { rewriteM3u8, LIVE_STREAM_BASE, isHlsManifestResponse } from '@/lib/m3u8';
 
 /**
  * 代理目标地址的两种传入形式：
@@ -114,9 +114,7 @@ export async function handleProxyRequest(req: Request, targetUrl: string): Promi
   }
 
   const contentType = response.headers.get('content-type') || '';
-  const isM3u8 =
-    contentType.includes('mpegurl') || contentType.includes('x-mpegurl') ||
-    targetUrl.toLowerCase().endsWith('.m3u8');
+  const isM3u8 = isHlsManifestResponse(finalUrl, contentType);
 
   // m3u8 文本：重写为代理地址（以重定向后的最终 URL 为 base 解析相对地址）
   if (isM3u8) {
@@ -137,6 +135,7 @@ export async function handleProxyRequest(req: Request, targetUrl: string): Promi
     const v = response.headers.get(name);
     if (v) outHeaders.set(name, v);
   }
+  if (/\.key$/i.test(new URL(finalUrl).pathname)) outHeaders.set('content-type', 'application/octet-stream');
   // fetch 会自动解压，转发时必须去掉长度相关头避免浏览器二次解压
   // 图片基本不变：长缓存交给浏览器与边缘 CDN（分片 / key 仍保守 1 小时）
   outHeaders.set(
@@ -211,9 +210,7 @@ export async function handleLiveStreamRequest(req: Request, targetUrl: string): 
   }
 
   const contentType = response.headers.get('content-type') || '';
-  const isM3u8 =
-    contentType.includes('mpegurl') || contentType.includes('x-mpegurl') ||
-    targetUrl.toLowerCase().split('?')[0].endsWith('.m3u8');
+  const isM3u8 = isHlsManifestResponse(finalUrl, contentType);
 
   // HLS manifest：重写变体/分片地址指向本路由，保证后续请求同源同鉴权。
   // 关键：以重定向后的最终 URL 为 base 解析相对地址（gslb 调度源 302 后路径会变）
@@ -230,7 +227,7 @@ export async function handleLiveStreamRequest(req: Request, targetUrl: string): 
 
   // FLV / TS 等流媒体：纯流式透传（禁止缓冲与缓存）
   const outHeaders = new Headers();
-  const ct = contentType || 'video/mp2t';
+  const ct = /\.key$/i.test(new URL(finalUrl).pathname) ? 'application/octet-stream' : contentType || 'video/mp2t';
   outHeaders.set('Content-Type', ct);
   outHeaders.set('Cache-Control', 'no-store, no-transform');
   outHeaders.set('X-Accel-Buffering', 'no');

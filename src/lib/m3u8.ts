@@ -35,6 +35,14 @@ export function makeAbsolute(url: string, base: string | undefined): string {
   }
 }
 
+/** A few CDNs label AES keys as mpegurl; binary keys/segments must never be rewritten. */
+export function isHlsManifestResponse(url: string, contentType: string): boolean {
+  let path = '';
+  try { path = new URL(url).pathname.toLowerCase(); } catch { return false; }
+  if (/\.(key|ts|m4s|aac|m4a|mp4|flv)$/.test(path)) return false;
+  return /\.m3u8?$/.test(path) || /mpegurl/i.test(contentType);
+}
+
 /** 将 m3u8 中的地址改写为经过本站代理的地址（分片/key/map 同样改写）。
  *  prefix 可指定代理地址基座（直播流走 /api/live/stream?url=，点播默认 /api/proxy?url=） */
 export function rewriteM3u8(
@@ -46,7 +54,8 @@ export function rewriteM3u8(
   if (depth > 5) return content;
   const lines = content.split('\n');
   const out = lines.map((line) => {
-    if (line.startsWith('#EXT-X-KEY') || line.startsWith('#EXT-X-MAP')) {
+    // Audio/subtitle renditions and low-latency HLS resources also carry URI attributes.
+    if (line.trimStart().startsWith('#EXT')) {
       return line.replace(/(URI=")([^"]+)(")/g, (m, p1: string, uri: string, p2: string) => {
         if (isProxiedUri(uri)) return m;
         return p1 + prefix + encodeURIComponent(makeAbsolute(uri, baseUrl)) + p2;

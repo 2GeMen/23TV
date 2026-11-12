@@ -276,7 +276,7 @@ export function LiveChannelList({ channels, groups, currentUrl, onSelect, onFilt
           className="btn-ghost btn-sm"
           disabled={isProbing || filtered.length === 0}
           onClick={() => void probe(filtered)}
-          title="探测当前列表频道是否可播（分片级校验；量大时自动分批排队跑完，结果 6 小时内有效）"
+          title="检查清单与分片连接，不代表完整解码或节目正确；结果缓存 30 分钟"
         >
           测活
         </button>
@@ -321,7 +321,7 @@ export function LiveChannelList({ channels, groups, currentUrl, onSelect, onFilt
                   : 'bg-chip text-muted border-line hover:text-content hover:bg-hover'
               )}
               onClick={() => setAliveFilter((v) => (v === 'green' ? 'off' : 'green'))}
-              title="只看分片级验证通过的频道"
+              title="只看分片可达且下载速度达标的频道，未验证完整播放"
             >
               绿点 {aliveCounts.green}
             </button>
@@ -335,7 +335,7 @@ export function LiveChannelList({ channels, groups, currentUrl, onSelect, onFilt
               onClick={() => setAliveFilter((v) => (v === 'ok' ? 'off' : 'ok'))}
               title="看所有验证通过（含直链/清单级弱验证）的频道"
             >
-              可播 {aliveCounts.ok}
+              可达 {aliveCounts.ok}
             </button>
           </>
         )}

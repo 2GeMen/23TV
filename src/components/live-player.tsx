@@ -2,6 +2,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Artplayer from 'artplayer';
+import { createPortal } from 'react-dom';
+import { LiveCaptions } from './live-captions';
+import { releasePlayerAudio } from '@/lib/player-audio-tap';
 import Hls, { type HlsConfig } from 'hls.js';
 import { Spinner } from './states';
 
@@ -50,6 +53,7 @@ interface LivePlayerProps {
 
 export function LivePlayer({ url, title, onPrevChannel, onNextChannel }: LivePlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [captionHost, setCaptionHost] = useState<HTMLElement | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const artRef = useRef<any>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -142,6 +146,15 @@ export function LivePlayer({ url, title, onPrevChannel, onNextChannel }: LivePla
 
     /** HLS 直播参数：小缓冲、快速追帧；与点播（大缓冲、进度恢复）刻意区分 */
     const setupHls = (video: HTMLVideoElement, mediaUrl: string, stage: 'direct' | 'proxy') => {
+      const ios = /iPad|iPhone|iPod/i.test(navigator.userAgent) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      if (video.canPlayType('application/vnd.apple.mpegurl') && (ios || !Hls.isSupported())) {
+        // iOS native HLS avoids unsupported MSE; proxy keeps renditions and keys same-origin.
+        setupNative(video, mediaUrl.startsWith(STREAM_PROXY_PREFIX) ? mediaUrl : proxyUrl(url), false,
+          '直播播放失败，请重试或更换线路');
+        return;
+      }
+
       cleanupEngines();
       let liveNetRetryCount = 0;
       let mediaRecoverCount = 0;
@@ -205,6 +218,11 @@ export function LivePlayer({ url, title, onPrevChannel, onNextChannel }: LivePla
           return;
         }
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          if (stage === 'direct' && !mediaUrl.startsWith(STREAM_PROXY_PREFIX)) {
+            showHint('直播直连中断，改用代理重试...');
+            setupHls(video, proxyUrl(url), 'proxy');
+            return;
+          }
           // 播放中网络抖动：尝试恢复拉流；连续失败达到阈值则报错退出
           liveNetRetryCount++;
           if (liveNetRetryCount > 5) {
@@ -317,7 +335,8 @@ export function LivePlayer({ url, title, onPrevChannel, onNextChannel }: LivePla
       moreVideoAttr: { playsInline: true },
       customType: {
         m3u8: (video: HTMLVideoElement) => {
-          setupHls(video, url, 'direct');
+          // Same-origin first: avoid per-CDN CORS/mixed-content failures and startup delays.
+          setupHls(video, url.startsWith(STREAM_PROXY_PREFIX) ? url : proxyUrl(url), 'proxy');
         },
         flv: (video: HTMLVideoElement) => {
           void setupFlv(video, url, true);
@@ -328,6 +347,7 @@ export function LivePlayer({ url, title, onPrevChannel, onNextChannel }: LivePla
       },
     });
     artRef.current = art;
+    setCaptionHost(art.template.$player);
     art.on('video:loadedmetadata', () => {
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -364,6 +384,8 @@ export function LivePlayer({ url, title, onPrevChannel, onNextChannel }: LivePla
       clearTimeout(startTimer);
       if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
       cleanupEngines();
+      setCaptionHost(null);
+      releasePlayerAudio(art.video);
       art.destroy();
       artRef.current = null;
       destroyed = true;
@@ -374,6 +396,7 @@ export function LivePlayer({ url, title, onPrevChannel, onNextChannel }: LivePla
   return (
     <div className="relative w-full h-full">
       <div ref={containerRef} className="w-full h-full" />
+      {captionHost && createPortal(<LiveCaptions key={url} url={url} video={artRef.current.video} />, captionHost)}
       {/* 起播前的品牌占位图 */}
       {showPoster && !error && (
         <div

@@ -18,7 +18,7 @@ export interface AppSettings {
   adFilter: boolean;
   doubanEnabled: boolean;
   /** 首页推荐数据源：豆瓣热门 / Bangumi 每日放送（免 key）/ 影视热榜（60s API） */
-  recommendSource: 'douban' | 'bangumi' | 'hot-list';
+  recommendSource: 'douban' | 'bangumi' | 'hot-list' | 'tmdb';
   /** 用户是否在设置中主动选择过推荐数据源；为 false 时部署者的 DEFAULT_RECOMMEND_SOURCE 默认值可生效 */
   recommendSourceTouched: boolean;
   autoplayNext: boolean;
@@ -100,8 +100,8 @@ export interface LiveRecentEntry {
   timestamp: number;
 }
 
-/** 测活结果有效期：6 小时内直接复用，过期后重新探测 */
-export const LIVE_PROBE_TTL_MS = 6 * 60 * 60 * 1000;
+/** 测活结果有效期：30 分钟内直接复用，过期后重新探测 */
+export const LIVE_PROBE_TTL_MS = 30 * 60 * 1000;
 
 /** 直播测活结果缓存条目（按流 URL 唯一标识） */
 export interface LiveProbeEntry {
@@ -193,7 +193,7 @@ interface AppState extends AppSettings {
   liveFavorites: string[];
   /** 最近观看频道（上限 20） */
   liveRecent: LiveRecentEntry[];
-  /** 测活结果缓存（6 小时有效，跨会话持久化） */
+  /** 测活结果缓存（30 分钟有效，跨会话持久化） */
   liveProbeResults: Record<string, LiveProbeEntry>;
   /** 点播源健康度（随搜索滚动更新，跨会话持久化） */
   sourceHealth: Record<string, SourceHealthEntry>;

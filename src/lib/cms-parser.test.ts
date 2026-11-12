@@ -104,6 +104,13 @@ describe('parseDetail', () => {
     expect(detail.videoInfo.sourceName).toBe('测试源');
   });
 
+  it('keeps labels paired with playable URLs from the selected line', () => {
+    const vod_play_url = '网页入口$https://cdn/share$$$预告$ftp://bad# 第9期上 $https://cdn/9.m3u8#番外：重聚$https://cdn/extra.m3u8#$https://cdn/10.m3u8';
+    const detail = parseDetail({ list: [{ vod_play_url }] }, source);
+    expect(detail.episodes).toEqual(['https://cdn/9.m3u8', 'https://cdn/extra.m3u8', 'https://cdn/10.m3u8']);
+    expect(detail.episodeLabels).toEqual(['第9期上', '番外：重聚', '']);
+  });
+
   it('play_url 为空时从简介兜底', () => {
     const data = { list: [{ vod_name: 'X', vod_content: '$https://cdn/fall.m3u8' }] };
     const detail = parseDetail(data, source);

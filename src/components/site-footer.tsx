@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useAuth } from '@/components/auth';
+import { SourceCredits } from './source-credits';
 
 /** 上游仓库最新 tag（即最新版本号），用于页脚的更新检测 */
 const UPSTREAM_TAGS_API = 'https://api.github.com/repos/LibreSpark/LibreTV/tags?per_page=1';
@@ -85,25 +86,31 @@ function UpdateTip({ update }: { update: UpstreamUpdate | null }) {
   );
 }
 
-/** 全站统一页脚：仓库链接 + 版本号（悬停显示上游更新检测结果） */
+/** Compact home footer with project attribution integrated into the introduction. */
 export function SiteFooter() {
   const { version } = useAuth();
   const upstreamUpdate = useUpstreamUpdate(version);
-  return (
-    <footer className="border-t border-line py-4">
-      <p className="text-center text-xs text-faint">
-        <a
-          href="https://github.com/LibreSpark/LibreTV"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="group relative inline-block cursor-help hover:text-accent"
-        >
-          LibreTV{version ? ` v${version}` : ''}
-          {version && <UpdateTip update={upstreamUpdate} />}
-        </a>
-        {' · '}
-        AGPL-3.0 License
-      </p>
-    </footer>
-  );
+  return <footer id="about-23tv" className="border-t border-line bg-card/40 mt-8">
+    <div className="max-w-6xl mx-auto px-4 py-9 grid grid-cols-1 lg:grid-cols-[1.1fr_1fr] items-start gap-7 lg:gap-12">
+      <section aria-label="关于 23 TV" className="min-w-0">
+        <div className="flex items-center gap-3 mb-3">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/branding/23tv.svg" alt="" width={36} height={36} className="rounded-lg" />
+          <div><p className="font-semibold text-content">23 TV</p><p className="text-xs text-faint mt-0.5">把喜欢的故事，带回家。</p></div>
+        </div>
+        <p className="text-sm text-muted leading-7 max-w-xl">基于 LibreTV 定制的家庭影视平台，汇集点播搜索、直播与家庭续播。影视内容来自配置的第三方来源，服务本身不托管影片。</p>
+        <p className="text-xs text-faint mt-4 flex flex-wrap items-center gap-x-2 gap-y-1">
+          <a href="https://github.com/LibreSpark/LibreTV" target="_blank" rel="noopener noreferrer" className="group relative hover:text-accent">
+            powered by LibreTV{version ? ` v${version}` : ''}
+            {version && <UpdateTip update={upstreamUpdate} />}
+          </a>
+          <span aria-hidden="true">·</span>
+          <a href="https://github.com/LibreSpark/LibreTV/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" className="hover:text-accent">AGPL-3.0 License</a>
+        </p>
+      </section>
+      <div className="min-w-0 border-t border-line pt-6 lg:border-t-0 lg:border-l lg:pl-8 lg:pt-0">
+        <SourceCredits />
+      </div>
+    </div>
+  </footer>;
 }

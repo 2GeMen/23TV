@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { NextResponse } from 'next/server';
 import { guardRequest, jsonError } from '@/lib/api-guard';
 import { checkLiveUrlAllowed } from '@/lib/ssrf';
@@ -58,7 +60,10 @@ export async function GET(req: Request) {
   const force = sp.get('force') === '1';
 
   // 直播专用校验：默认拒绝内网，部署者可设 LIVE_ALLOW_PRIVATE=1 放行自建 IPTV
-  const verdict = await checkLiveUrlAllowed(url);
+  // 仅允许这个固定内置清单直接读取固定文件，不放开其他内网目标。
+  const isBuiltin = url === 'http://127.0.0.1:8080/live-curated.m3u' ||
+    url === 'http://localhost:8080/live-curated.m3u';
+  const verdict = isBuiltin ? { ok: true as const } : await checkLiveUrlAllowed(url);
   if (!verdict.ok) return jsonError(verdict.reason, 403);
 
   // 直播专用缓存：数千频道的播放列表 JSON 不与豆瓣等热点数据共池（通用缓存超限会整体 clear）
@@ -69,7 +74,9 @@ export async function GET(req: Request) {
       // allowPrivate：与直播流代理同一把尺子，LIVE_ALLOW_PRIVATE=1 时自建内网 IPTV 订阅才能拉通。
       // 此前漏传该参数，fetchUpstream 的逐跳校验会回落到点播侧 checkUpstreamAllowed，
       // 内网订阅源在第一跳即被判为「目标地址不在允许范围内」，导致直播源无法添加/启用。
-      const res = await fetchUpstream(url, { timeoutMs: 15000, retries: 1, allowPrivate: true });
+      const res = isBuiltin
+        ? new Response(await readFile(path.join(process.cwd(), 'public/live-curated.m3u'), 'utf8'))
+        : await fetchUpstream(url, { timeoutMs: 15000, retries: 1, allowPrivate: true });
       if (!res.ok) {
         return jsonError(`订阅地址请求失败: ${res.status}`, 502);
       }

@@ -1,10 +1,25 @@
 import { describe, expect, it, vi } from 'vitest';
 import { parseM3u8Playlist } from './m3u8-parse';
-import { isProxiedUri, rewriteM3u8, stripAdGroups, stripLeadAdGroup } from './m3u8';
+import { isHlsManifestResponse, isProxiedUri, rewriteM3u8, stripAdGroups, stripLeadAdGroup } from './m3u8';
 
 const BASE = 'https://cdn.example.com/live/index.m3u8';
 
 describe('rewriteM3u8', () => {
+  it('proxies separate audio, subtitles, iframe and low-latency URI attributes', () => {
+    const lines = [
+      '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",URI="audio/English/audio.m3u8?sid=public-session"',
+      '#EXT-X-MEDIA:TYPE=SUBTITLES,URI="subtitle/en.m3u8"',
+      '#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=10000,URI="iframe.m3u8"',
+      '#EXT-X-PART:DURATION=0.3,URI="part.m4s"',
+      '#EXT-X-PRELOAD-HINT:TYPE=PART,URI="next.m4s"',
+    ];
+    const out = rewriteM3u8(lines.join('\n'), BASE, 0, '/api/live/stream?url=');
+    for (const uri of ['audio/English/audio.m3u8?sid=public-session','subtitle/en.m3u8','iframe.m3u8','part.m4s','next.m4s']) {
+      expect(out).toContain('URI="/api/live/stream?url=' + encodeURIComponent(new URL(uri, BASE).href) + '"');
+    }
+    expect(rewriteM3u8(out, BASE, 0, '/api/live/stream?url=')).toBe(out);
+  });
+
   it('把分片、嵌套播放列表、key、map 全部改写为代理地址（查询串形式）', () => {
     const input = [
       '#EXTM3U',
@@ -289,5 +304,17 @@ describe('parseM3u8Playlist · 片头广告剔除', () => {
 
     const parsed = await parseM3u8Playlist('https://cdn.example.com/a.m3u8', 0, undefined, { stripLeadAd: false });
     expect(parsed.segments).toHaveLength(2);
+  });
+});
+
+describe('HLS resource classification', () => {
+  it('does not corrupt binary keys or segments when CDN mislabels their MIME', () => {
+    for (const name of ['1785073141.key?token=public','segment.ts','audio.aac','init.m4s']) {
+      expect(isHlsManifestResponse('https://cdn.example.com/' + name, 'application/vnd.apple.mpegurl')).toBe(false);
+    }
+  });
+  it('recognizes signed playlist paths and extensionless playlist responses', () => {
+    expect(isHlsManifestResponse('https://cdn.example.com/live.m3u8?token=public', 'application/octet-stream')).toBe(true);
+    expect(isHlsManifestResponse('https://cdn.example.com/play', 'application/x-mpegURL')).toBe(true);
   });
 });

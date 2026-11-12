@@ -12,3 +12,23 @@ vitest-results.json
 .zcode/
 .codebuddy/
 generated-images/
+# Local-only administrator logs and access rules
+.admin-data/
+
+# Shared family watch history
+.watch-data/
+
+# Private invitation accounts and encrypted mail queue
+.accounts-data/
+
+# Deployment configuration, persistent data and local speech runtime
+.env.*
+!.env.example
+.caption-runtime/
+.data/
+backups/
+*.private
+*.pid
+.DS_Store
+__pycache__/
+*.py[cod]
