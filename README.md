@@ -1,5 +1,8 @@
 # 23 TV
 
+> **[锈客 · Rusted Drifter](https://xiuke.net/)** · **[口搓铺](https://xiuke.net/projects/)**  
+> 手艺生了锈，在 AI 时代重新上手。
+
 <p align="center"><img src="public/branding/23tv.svg" width="112" alt="23 TV"></p>
 <p align="center">把喜欢的故事，带回家。</p>
 
